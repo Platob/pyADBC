@@ -2,7 +2,7 @@ import os
 from typing import Callable, Optional, Any, Generator
 from urllib.parse import quote_plus
 
-from pyarrow import Schema
+from pyarrow import Schema, NativeFile
 from pyarrow.fs import FileInfo, FileSelector, FileSystem, FileType, LocalFileSystem
 
 from adbc.arrow import partitions
@@ -126,13 +126,13 @@ def parquet_file_writer(
     if not append:
         fs.delete_dir_contents(folder, missing_dir_ok=True)
     fs.create_dir(folder)
-
-    return ParquetWriter(
-        folder + path_sep + filename,
+    filepath = folder + path_sep + filename
+    return (filepath, None, ParquetWriter(
+        filepath,
         schema,
         filesystem=fs,
         **kwargs
-    )
+    ))
 
 
 def csv_file_writer(
@@ -144,7 +144,7 @@ def csv_file_writer(
     path_sep: str = "/",
     compression: Optional[str] = None,
     buffer_size: int = 0,
-    includer_header: bool = True,
+    include_header: bool = True,
     batch_size: int = 1024,
     delimiter: str = ",",
     **kwargs
@@ -154,24 +154,25 @@ def csv_file_writer(
     if not append:
         fs.delete_dir_contents(folder, missing_dir_ok=True)
     fs.create_dir(folder)
-
-    return CSVWriter(
-        fs.open_output_stream(
-            folder + path_sep + filename,
-            compression=compression,
-            buffer_size=buffer_size,
-            metadata={
-                "Content-Type": "application/csv"
-            }
-        ),
+    filepath = folder + path_sep + filename
+    stream: NativeFile = fs.open_output_stream(
+        filepath,
+        compression=compression,
+        buffer_size=buffer_size,
+        metadata={
+            "Content-Type": "application/csv"
+        }
+    )
+    return (filepath, stream, CSVWriter(
+        stream,
         schema,
         write_options=WriteOptions(
-            includer_header=includer_header,
+            include_header=include_header,
             batch_size=batch_size,
             delimiter=delimiter,
             **kwargs
         )
-    )
+    ))
 
 
 class DFSWriter(BatchWriter):
@@ -280,34 +281,36 @@ class DFSWriter(BatchWriter):
                     for pvalues, pbatch in partitions(batch, self.partition_by):
                         phash = tuple(pvalues.items())
                         if phash not in writers:
-                            nrows, writer = writers[phash] = (
+                            nrows, (filepath, stream, writer) = writers[phash] = (
                                 0,
                                 self.writer_builder(table_schema, pvalues, append, **kwargs)
                             )
                         else:
-                            nrows, writer = writers[phash]
+                            nrows, (filepath, stream, writer) = writers[phash]
 
                         while nrows + pbatch.num_rows >= max_file_rows:
                             # write the first dif
-                            writer.write(pbatch.slice(0, max_file_rows - nrows), chunk_size)
+                            writer.write(pbatch.slice(0, max_file_rows - nrows))
                             writer.close()
-                            yield writer.where
+                            yield filepath
                             pbatch = pbatch.slice(max_file_rows - nrows, None)
                             nrows = 0
-                            writer = self.writer_builder(table_schema, pvalues, True, **kwargs)
+                            (filepath, stream, writer) = self.writer_builder(table_schema, pvalues, True, **kwargs)
 
                         if pbatch.num_rows > 0:
-                            writer.write(pbatch, chunk_size)
+                            writer.write(pbatch)
                             nrows += pbatch.num_rows
-                        writers[phash] = (nrows, writer)
+                        writers[phash] = (nrows, (filepath, stream, writer))
             except BaseException as e:
                 if writers:
                     fs = self.server.fs()
                     try:
                         for k, v in writers.items():
-                            _, writer = v
+                            _, (filepath, stream, writer) = v
                             writer.close()
-                            fs.delete_file(writer.where)
+                            if stream:
+                                stream.close()
+                            fs.delete_file(filepath)
                         writers = dict()
                     except BaseException:
                         pass
@@ -316,43 +319,49 @@ class DFSWriter(BatchWriter):
                 if writers:
                     fs = self.server.fs()
                     for k, v in writers.items():
-                        nrows, writer = v
+                        nrows, (filepath, stream, writer) = v
                         writer.close()
+                        if stream:
+                            stream.close()
                         if nrows == 0:
-                            fs.delete_file(writer.where)
+                            fs.delete_file(filepath)
                         else:
-                            yield writer.where
+                            yield filepath
         else:
             nrows = 0
-            writer = self.writer_builder(table_schema, append=append, **kwargs)
+            (filepath, stream, writer) = self.writer_builder(table_schema, append=append, **kwargs)
 
             try:
                 for batch in batches:
                     while nrows + batch.num_rows >= max_file_rows:
                         # write the first dif
-                        writer.write(batch.slice(0, max_file_rows - nrows), chunk_size)
+                        writer.write(batch.slice(0, max_file_rows - nrows))
                         writer.close()
                         yield writer.where
                         batch = batch.slice(max_file_rows - nrows, None)
                         nrows = 0
-                        writer = self.writer_builder(table_schema, None, True, **kwargs)
+                        (filepath, stream, writer) = self.writer_builder(table_schema, None, True, **kwargs)
 
                     if batch.num_rows > 0:
-                        writer.write(batch, chunk_size)
+                        writer.write(batch)
                         nrows += batch.num_rows
-                    writer.write(batch, chunk_size)
             except BaseException as e:
                 try:
                     writer.close()
-                    self.server.fs().delete_file(writer.where)
+                    if stream:
+                        stream.close()
+                    self.server.fs().delete_file(filepath)
                     writer = None
+                    stream = None
                 except BaseException:
                     pass
                 raise e
             finally:
                 if writer is not None:
                     writer.close()
+                    if stream:
+                        stream.close()
                     if nrows == 0:
-                        self.server.fs().delete_file(writer.where)
+                        self.server.fs().delete_file(filepath)
                     else:
                         yield writer.where
