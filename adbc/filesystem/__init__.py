@@ -290,7 +290,7 @@ class DFSWriter(BatchWriter):
 
                         while nrows + pbatch.num_rows >= max_file_rows:
                             # write the first dif
-                            writer.write(pbatch.slice(0, max_file_rows - nrows))
+                            writer.write_batch(pbatch.slice(0, max_file_rows - nrows))
                             writer.close()
                             yield filepath
                             pbatch = pbatch.slice(max_file_rows - nrows, None)
@@ -298,7 +298,7 @@ class DFSWriter(BatchWriter):
                             (filepath, stream, writer) = self.writer_builder(table_schema, pvalues, True, **kwargs)
 
                         if pbatch.num_rows > 0:
-                            writer.write(pbatch)
+                            writer.write_batch(pbatch)
                             nrows += pbatch.num_rows
                         writers[phash] = (nrows, (filepath, stream, writer))
             except BaseException as e:
@@ -335,7 +335,7 @@ class DFSWriter(BatchWriter):
                 for batch in batches:
                     while nrows + batch.num_rows >= max_file_rows:
                         # write the first dif
-                        writer.write(batch.slice(0, max_file_rows - nrows))
+                        writer.write_batch(batch.slice(0, max_file_rows - nrows))
                         writer.close()
                         yield writer.where
                         batch = batch.slice(max_file_rows - nrows, None)
@@ -343,7 +343,7 @@ class DFSWriter(BatchWriter):
                         (filepath, stream, writer) = self.writer_builder(table_schema, None, True, **kwargs)
 
                     if batch.num_rows > 0:
-                        writer.write(batch)
+                        writer.write_batch(batch)
                         nrows += batch.num_rows
             except BaseException as e:
                 try:
