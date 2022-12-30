@@ -23,7 +23,7 @@ class LazyReader(BatchReader):
         if schema is None:
             for _ in method(*args, **kwargs):
                 schema = _.schema
-                cast = False
+                safe_cast = False
                 break
         super().__init__(schema, None)
         self.method = method

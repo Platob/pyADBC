@@ -85,14 +85,28 @@ class DataFileSystem(Server):
         base_dir: str = "",
         file_format: str = FileFormat.parquet,
         file_writer: Optional[Callable] = None,
+        file_extension: Optional[str] = None,
         partition_by: list[str] = (),
         schema: Optional[str] = None,
         catalog: Optional[str] = None,
-        schema_arrow: Optional[Schema] = None
+        schema_arrow: Optional[Schema] = None,
+        compression: Optional[str] = None
     ):
+        if compression is None and file_format == FileFormat.parquet:
+            compression = "snappy"
+
         return DFSWriter(
-            self, table, base_dir, file_format, file_writer, partition_by,
-            schema=schema, catalog=catalog, schema_arrow=schema_arrow
+            self,
+            base_dir,
+            file_format,
+            table,
+            file_writer,
+            file_extension=file_extension,
+            partition_by=partition_by,
+            schema=schema,
+            catalog=catalog,
+            schema_arrow=schema_arrow,
+            compression=compression
         )
 
 # ---------------------------------------------- WRITER ----------------------------------------------
@@ -121,23 +135,65 @@ def parquet_file_writer(
     )
 
 
+def csv_file_writer(
+    fs: FileSystem,
+    folder: str,
+    filename: str,
+    schema: Schema,
+    append: bool = True,
+    path_sep: str = "/",
+    compression: Optional[str] = None,
+    buffer_size: int = 0,
+    includer_header: bool = True,
+    batch_size: int = 1024,
+    delimiter: str = ",",
+    **kwargs
+):
+    from pyarrow.csv import CSVWriter, WriteOptions
+
+    if not append:
+        fs.delete_dir_contents(folder, missing_dir_ok=True)
+    fs.create_dir(folder)
+
+    return CSVWriter(
+        fs.open_output_stream(
+            folder + path_sep + filename,
+            compression=compression,
+            buffer_size=buffer_size,
+            metadata={
+                "Content-Type": "application/csv"
+            }
+        ),
+        schema,
+        write_options=WriteOptions(
+            includer_header=includer_header,
+            batch_size=batch_size,
+            delimiter=delimiter,
+            **kwargs
+        )
+    )
+
+
 class DFSWriter(BatchWriter):
 
     file_writers = {
-        FileFormat.parquet: parquet_file_writer
+        FileFormat.parquet: parquet_file_writer,
+        FileFormat.csv: csv_file_writer
     }
 
     def __init__(
         self,
         server: "DataFileSystem",
-        table: str,
         base_dir: str,
         file_format: str,
+        table: str = "",
         file_writer: Optional[Callable] = None,
+        file_extension: Optional[str] = None,
         partition_by: list[str] = (),
         schema: Optional[str] = None,
         catalog: Optional[str] = None,
-        schema_arrow: Optional[Schema] = None
+        schema_arrow: Optional[Schema] = None,
+        compression: Optional[str] = None
     ):
         self.server = server
         self.table = table
@@ -149,6 +205,17 @@ class DFSWriter(BatchWriter):
         self.schema = schema
         self.catalog = catalog
         self.schema_arrow = schema_arrow
+        self.compression = compression
+
+        if file_extension is None:
+            if compression:
+                if self.file_format == FileFormat.parquet:
+                    file_extension = ".%s.%s" % (compression, self.file_format)
+                else:
+                    file_extension = ".%s.%s" % (self.file_format, compression)
+            else:
+                file_extension = "." + self.file_format
+        self.file_extension = file_extension
 
     @property
     def path_sep(self):
@@ -164,7 +231,7 @@ class DFSWriter(BatchWriter):
             return self.base_dir
 
     def filename(self, seed: int = 16):
-        return os.urandom(seed).hex() + "." + self.file_format
+        return os.urandom(seed).hex() + self.file_extension
 
     def writer_builder(
         self,
@@ -180,6 +247,7 @@ class DFSWriter(BatchWriter):
             schema=schema,
             append=append,
             path_sep=self.path_sep,
+            compression=self.compression,
             **kwargs
         )
 

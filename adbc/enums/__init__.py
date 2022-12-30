@@ -5,4 +5,5 @@ class Protocol:
 
 class FileFormat:
     parquet = "parquet"
+    csv = "csv"
 
