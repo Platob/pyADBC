@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Generator
+from typing import Callable, Optional, Generator, Iterable, Any
 
 from pyarrow import Schema, RecordBatch
 
@@ -14,9 +14,9 @@ class LazyReader(BatchReader):
 
     def __init__(
         self,
-        method: Callable,
+        method: Callable[[Any], Iterable[RecordBatch]],
         schema: Optional[Schema] = None,
-        cast: bool = False,
+        safe_cast: bool = False,
         *args,
         **kwargs: dict
     ):
@@ -29,7 +29,7 @@ class LazyReader(BatchReader):
         self.method = method
         self.args = args
         self.kwargs = kwargs
-        self.safe_cast = cast
+        self.safe_cast = safe_cast
 
     def __call__(self, *args, **kwargs):
         return self.method(*self.args, **self.kwargs)
@@ -38,7 +38,7 @@ class LazyReader(BatchReader):
     def batches(self) -> Generator[RecordBatch, None, None]:
         return (
             cast_batch(_, self.schema) if self.safe_cast else _
-            for _ in self()
+            for _ in self.method(*self.args, **self.kwargs)
         )
 
     @batches.setter

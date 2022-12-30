@@ -20,22 +20,34 @@ class BatchReader:
         chunk_size: Optional[int] = None
     ):
         if isinstance(batches, _BatchReader):
-            return BatchReader(batches.schema, batches)
+            return BatchReader(batches.schema, batches, persisted=False)
         elif isinstance(batches, RecordBatch):
             if chunk_size:
-                return BatchReader(batches.schema, Table.from_batches([batches], batches.schema).to_batches(chunk_size))
-            return BatchReader(batches.schema, [batches])
+                return BatchReader(
+                    batches.schema,
+                    Table.from_batches([batches], batches.schema).to_batches(chunk_size),
+                    persisted=True
+                )
+            return BatchReader(batches.schema, [batches], persisted=True)
         elif isinstance(batches, Table):
-            return BatchReader(batches.schema, batches.to_batches(chunk_size))
-        return BatchReader(batches.schema, (_ for _ in batches))
+            return BatchReader(batches.schema, batches.to_batches(chunk_size), persisted=True)
+        elif isinstance(batches, RecordBatchReader):
+            return BatchReader(batches.schema, batches, persisted=False)
+        else:
+            raise TypeError("Cannot build BatchReader from object.__class__=%s" % batches.__class__)
 
     def __init__(
         self,
         schema: Schema,
-        batches: Union[Iterable[RecordBatch], Any]
+        batches: Union[Iterable[RecordBatch], Any],
+        persisted: bool = False
     ):
         self.schema = schema
         self.batches = batches
+        self.persisted = persisted
+
+    def __call__(self, *args, **kwargs):
+        return self.batches
 
     def __iter__(self):
         return (_ for _ in self.batches)
@@ -50,7 +62,9 @@ class BatchReader:
         self._batches = batches
 
     def persist(self):
-        return BatchReader(self.schema, list(self.batches))
+        if self.persisted:
+            return BatchReader(self.schema, list(self.batches))
+        return self
 
     def close(self):
         pass

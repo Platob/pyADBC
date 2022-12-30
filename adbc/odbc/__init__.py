@@ -68,7 +68,7 @@ class ODBC(Server):
             max_text_size,
             max_binary_size,
             falliable_allocations
-        ) if lazy else BatchReader(reader.schema, reader)
+        ) if lazy else BatchReader(reader.schema, reader, persisted=False)
 
     def write(self, table: str, schema: Optional[str] = None, catalog: Optional[str] = None):
         return ODBCWriter(self, table, schema, catalog)
